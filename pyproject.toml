@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "texstudio-mcp"
+version = "0.15.9"
+description = "MCP server for LaTeX projects edited in TeXstudio (stdio transport)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.8.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "bibtexparser>=1.4.3"]
+bibtex = ["bibtexparser>=1.4.3"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project.scripts]
+texstudio-mcp = "texstudio_mcp.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/texstudio_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/texstudio_mcp", "README.md", "pyproject.toml"]
