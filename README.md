@@ -1,51 +1,54 @@
 # texstudio-mcp
 
-A **Model Context Protocol (stdio)** server for **TeXstudio / LaTeX** workflows.
+MCP (Model Context Protocol) server over **stdio** for **TeXstudio** and **LaTeX** projects. It helps AI clients read and edit sources inside a project folder, run `latexmk` and bibliography tools, inspect logs, preview PDFs, use SyncTeX, run ChkTeX, and optionally read TeXstudio profile files on the host.
 
-- **Phase A**: environment probes (`get_server_info`, `health_check_tex_toolchain`).
-- **Phase B**: all project paths are resolved inside a `workspace_root` sandbox.
-- **Phase C-1**: read, grep, list, and static `.tex` dependency scanning; `.bib` validation and optional normalization.
-- **Phase C-2**: line-based replace and create/overwrite writes (UTF-8, LF).
-- **Phase C-3**: `latexmk` compile; sandboxed **`bibtex` / `biber`**; heuristic `.log` / `.blg` analysis; PDF metadata (`pdfinfo`) and text preview (`pdftotext`); SyncTeX forward/backward (`synctex` on PATH).
-- **Phase D**: **`chktex`** (single file, batch, workspace scan).
-- **Phase E**: read-only TeXstudio profile snapshots (`texstudio.ini`, `lastSession.txss`) from OS config dirs — **not** scoped by `workspace_root`.
+**Version**: see `pyproject.toml` or `texstudio_mcp.__version__`.
 
-**Current version**: see `pyproject.toml` / `src/texstudio_mcp/__init__.py`.
+## What it does
 
-## Requirements
+- **Project sandbox**: Paths are resolved under a `workspace_root` you provide. Relative paths cannot escape the root (`..` and absolute paths are rejected).
+- **Read & search**: Read `.tex`/`.bib`/etc., grep the tree, list LaTeX-related files, statically scan `\input`, `\includegraphics`, bibliographies, and more in a single `.tex` file.
+- **Edit**: Replace line ranges or write new files (UTF-8, LF).
+- **Build**: `latexmk -pdf`, plus `bibtex` / `biber` on a job basename, or a combined pipeline (latexmk → bib → optional extra latexmk passes). Heuristic `.log` / `.blg` parsing.
+- **PDF & SyncTeX**: `pdfinfo` metadata, `pdftotext` previews, `synctex view` / `synctex edit` when those tools are on `PATH`.
+- **Lint**: `chktex` on one file, a list of files, or all `.tex` files discovered in the workspace.
+- **TeXstudio hints** (optional): Read `texstudio.ini` or `lastSession.txss` from OS config locations — **not** part of the project sandbox. Useful for `suggested_job_basename` when orchestrating builds.
 
-- Python 3.10+
-- Recommended: virtualenv at the project root
+External commands (`latexmk`, `pdflatex`, `bibtex`, `biber`, `pdfinfo`, `pdftotext`, `synctex`, `chktex`) must be installed separately (e.g. TeX Live, MiKTeX, Poppler). The server only checks `PATH` and invokes them with timeouts and truncated output.
+
+## Install
+
+- Python **3.10+**
 
 ```powershell
+git clone https://github.com/ChenAI-TGF/texstudio-mcp.git
+cd texstudio-mcp
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
 ```
 
-Optional:
+Optional BibTeX parsing via [bibtexparser](https://pypi.org/project/bibtexparser/):
 
 ```powershell
 pip install -e ".[bibtex]"
 ```
 
-Enables `validate_bib_file(..., use_bibtexparser=true)`.
+Then use `validate_bib_file(..., use_bibtexparser=true)`.
 
-## Run (stdio)
+## Run
 
 ```powershell
 python -m texstudio_mcp
 ```
 
-After install:
+Or, after install:
 
 ```powershell
 texstudio-mcp
 ```
 
-## Register in Cursor (example)
-
-Add a **stdio** MCP server; point `command` at your Python and pass `-m texstudio_mcp`:
+## Cursor configuration (example)
 
 ```json
 {
@@ -59,79 +62,94 @@ Add a **stdio** MCP server; point `command` at your Python and pass `-m texstudi
 }
 ```
 
-Replace paths with your clone root and venv `python.exe`.
+Use your actual clone path and venv `python.exe`.
 
-## Tools
+## Tool reference
 
-### Phase A
-
-| Tool | Description |
-|------|-------------|
-| `get_server_info` | Python, platform, and package version |
-| `health_check_tex_toolchain` | `shutil.which` for `latexmk`, `pdflatex`, `xelatex`, `lualatex`, `tectonic`, `bibtex`, `biber`, `chktex`, `pdfinfo`, `pdftotext`, `synctex` |
-
-### Phase B (path policy)
+### Server & toolchain
 
 | Tool | Description |
 |------|-------------|
-| `validate_workspace_root` | Ensure path exists and is a directory; return normalized absolute path |
-| `resolve_safe_project_path` | Resolve a relative path under `workspace_root`; block absolute paths and `..` escapes |
+| `get_server_info` | Python executable, platform, package version |
+| `health_check_tex_toolchain` | Which of `latexmk`, `pdflatex`, `xelatex`, `lualatex`, `tectonic`, `bibtex`, `biber`, `chktex`, `pdfinfo`, `pdftotext`, `synctex` are on `PATH` |
 
-### Phase C-1 (read & search)
-
-| Tool | Description |
-|------|-------------|
-| `read_project_file` | Read one UTF-8 text file (optional 1-based line range; capped by `max_chars`) |
-| `grep_project` | Regex search over small text files (default `.tex`/`.bib`/`.sty`/`.cls`/`.bst`) |
-| `list_latex_related_files` | Recursively list common LaTeX suffixes (skips `.git`, `.venv`, etc.) |
-| `parse_tex_dependencies` | Static scan of one `.tex`: `\input`, `\include`, `\bibliography`, `\addbibresource`, `\InputIfFileExists` (first arg only); `\includegraphics` (optional `[…]` skipped; **same-file** `\graphicspath{…}` prefixes tried after literal path; edges may include `graphicspath_resolution` / `graphicspath_prefix_norm`); `\documentclass`, `\usepackage`, `\bibliographystyle` → `.bst`; paths normalized relative to the `.tex` dir and checked to stay in the sandbox; asset edges include `workspace_asset_found` (texmf-only styles often **false**). Dynamic targets (`\`, `#`) go to `unresolved`. **Does not run TeX.** Optional `scan_mode=workspace_manifest`: enumerate `.tex`/`.bib`/`.bst`/`.cls`/`.sty` in the workspace; optional `hint_main_tex_valid` for `relative_tex_path` |
-
-### Phase C-2 (writes)
+### Workspace paths
 
 | Tool | Description |
 |------|-------------|
-| `replace_project_lines` | Replace inclusive 1-based line range; empty file only allows `(1, 1)`; size limits via `max_file_bytes_*` |
-| `write_project_file` | Create UTF-8 file (mkdir parents); existing files need `overwrite=true` |
+| `validate_workspace_root` | Confirm directory exists; return normalized absolute path |
+| `resolve_safe_project_path` | Resolve a relative path inside `workspace_root` |
 
-### Phase C-3 (build & logs)
-
-| Tool | Description |
-|------|-------------|
-| `compile_latex_document` | `latexmk -pdf` under `workspace_root` (see TeXstudio notes for `-cd` behavior). Returns `summary`, truncated `stdout_tail` / `stderr_tail`, `wall_clock_ms`. **Per MCP process**, `compile_latex_document`, `run_bibtex_on_job`, `run_biber_on_job`, and `compile_latex_then_run_bibliography_on_job` share one **exclusive slot** per `workspace_root`; overlapping calls get `concurrent_compile_blocked` and `concurrent_workspace_exclusive_blocked` (v0.15.3+). |
-| `compile_latex_then_run_bibliography_on_job` | **Pipeline** (v0.15.6+): one slot, **latexmk → bib** (`bibliography_tool`: `auto` / `bibtex` / `biber`). Empty `job_name` defaults to `main_tex` stem (v0.15.9+); with `bibliography_tool=auto` and invalid stem, may read TeXstudio `suggested_job_basename`. `bibliography_cycles` (1..4, default 1) repeats bib + `post_bibliography_latexmk_passes` (0..2). Returns `compile_latex_document`, `bibliography_cycle_results`, optional `guess_job_bibliography_backend`, `run_bibliography`, optional `post_compile_latex_document`, `summary`, `stage_failed` on failure. **Not** an unbounded latexmk loop. |
-| `analyze_latex_log` | Tail-read `.log` (heuristic `file_line` / `latex_error` / warnings) |
-| `analyze_bibliography_log` | Read `.blg` (BibTeX or biber): `backend_guess`, `issues`, `severity_counts`, truncated `tail` |
-| `guess_job_bibliography_backend` | **Read-only**: inspect `JOB.bcf` / `JOB.aux` prefix; `recommended_tool` `biber` / `bibtex` / `unknown`, `confidence`, `aux_exists` / `bcf_exists` / `blg_exists` |
-| `run_bibtex_on_job` | `bibtex JOB` with `cwd` = sandboxed `relative_working_directory`; `job_name` is basename only; default preflight requires `JOB.aux`; same exclusive slot as compile |
-| `run_biber_on_job` | `biber JOB`; default preflight requires `JOB.bcf`; same semantics as bibtex runner |
-| `validate_bib_file` | Duplicate keys / `@string` macros (heuristic, or `use_bibtexparser=true` with `[bibtex]` extra); coarse brace balance; optional `normalize` + `overwrite=true` to write back |
-| `read_pdf_metadata` | `pdfinfo` on sandboxed PDF; `metadata`, `pages`, `pdf_version`, size limits |
-| `extract_pdf_text_preview` | `pdftotext` for first `max_pages`; truncate by `max_chars`; `truncation_reason` / `suggestion`; `suggestion_locale` `en` or `zh` when truncated |
-| `resolve_synctex_forward` | `synctex view`: TeX line → PDF `hits` |
-| `resolve_synctex_backward` | `synctex edit`: PDF page + coordinates → TeX `hits` |
-
-### Phase D (ChkTeX)
+### Read & analyze sources
 
 | Tool | Description |
 |------|-------------|
-| `run_chktex_on_tex` | Run `chktex` on one `.tex`; `warnings`, tails; `ok` may be false when ChkTeX exits non-zero |
-| `batch_run_chktex_on_tex` | Sequential chktex on a path list; `results`, `clean_count` |
-| `run_chktex_on_workspace` | Discover `.tex` files (like listing tools), then batch chktex; caps and `paths_truncated` metadata |
+| `read_project_file` | Read a UTF-8 file (optional line range, `max_chars` cap) |
+| `grep_project` | Regex search across project text files |
+| `list_latex_related_files` | List `.tex`, `.bib`, `.sty`, etc. (skips `.git`, `.venv`, …) |
+| `parse_tex_dependencies` | Static dependency scan for one `.tex` (inputs, graphics with `\graphicspath`, packages, `.bst`, bibliographies). Optional `workspace_manifest` mode lists assets in the tree. Does not run TeX. |
 
-### Phase E (TeXstudio, outside sandbox)
+### Edit sources
 
 | Tool | Description |
 |------|-------------|
-| `read_texstudio_profile_snapshot` | **No `workspace_root`**. Read `texstudio.ini` or `lastSession.txss` (basename allow-list only). Optional `texstudio_config_dir` / `texstudio_ini_path` (`texstudio_ini_path` wins). `include_parsed_hints=true` (v0.15.9+): lightweight `parsed_hints` and optional `suggested_job_basename` for ini or txss. Use only in trusted sessions. |
+| `replace_project_lines` | Replace a 1-based inclusive line range |
+| `write_project_file` | Create or overwrite a file (`overwrite=true` to replace) |
 
-### TeXstudio vs MCP notes
+### Compile & bibliography
 
-- **`workspace_root` / `main_tex`**: TeXstudio often uses the main `.tex` folder as the working directory. If `workspace_root` **is** that folder and `main_tex` is only a basename (e.g. `manuscript.tex`), the server **omits** redundant `latexmk -cd`. If `workspace_root` is an ancestor, `-cd` is used by default so engines run in the subfolder.
-- **Recommendation**: Point `workspace_root` at the folder that contains the main `.tex` and pass `main_tex` as a filename; or use a repo root plus a relative path like `subdir/manuscript.tex` with `-cd`.
-- **Latency**: Each tool call spawns processes; `latexmk` may run multiple engine passes — often slower than a single IDE build. Check `wall_clock_ms` in responses. `summary` is derived from truncated stdout/stderr tails, not full multi‑MB logs (use `read_project_file` on `.log` for full text).
-- **Timeouts**: `timeout_seconds` covers spawn through process end; the process tree is killed on timeout.
-- **No parallel writers on the same workspace**: Do not overlap compile/bib/pipeline tools on the same `workspace_root` in one MCP process; the second call is rejected. **Different MCP processes** are not coordinated across machines.
-- **Profile snapshot**: Reads host TeXstudio config paths; not sandboxed — use only when you trust the environment.
+| Tool | Description |
+|------|-------------|
+| `compile_latex_document` | Run `latexmk -pdf` for `main_tex` under `workspace_root`. Returns `summary`, short `stdout_tail` / `stderr_tail`, `wall_clock_ms`. |
+| `compile_latex_then_run_bibliography_on_job` | One locked sequence: latexmk → `bibtex` or `biber` → optional extra latexmk passes (`post_bibliography_latexmk_passes` 0–2, `bibliography_cycles` 1–4). Empty `job_name` defaults from `main_tex`; `bibliography_tool=auto` picks backend from `.aux`/`.bcf`. |
+| `guess_job_bibliography_backend` | Read-only hint: `biber` vs `bibtex` from `JOB.bcf` / `JOB.aux` |
+| `run_bibtex_on_job` | Run `bibtex` with sandboxed working directory |
+| `run_biber_on_job` | Run `biber` with sandboxed working directory |
+| `analyze_latex_log` | Heuristic scan of a `.log` tail |
+| `analyze_bibliography_log` | Heuristic scan of a `.blg` |
+
+**Concurrency:** For a given `workspace_root`, only one of `compile_latex_document`, `run_bibtex_on_job`, `run_biber_on_job`, or `compile_latex_then_run_bibliography_on_job` runs at a time **inside the same MCP process**. A second call gets `concurrent_workspace_exclusive_blocked`. Separate MCP instances do not coordinate.
+
+### Bibliography files & PDF
+
+| Tool | Description |
+|------|-------------|
+| `validate_bib_file` | Check `.bib` for duplicate keys, rough brace balance; optional whitespace normalize / write-back |
+| `read_pdf_metadata` | `pdfinfo` on a sandboxed PDF |
+| `extract_pdf_text_preview` | `pdftotext` excerpt (`max_pages`, `max_chars`; optional `suggestion_locale` `en`/`zh` when truncated) |
+| `resolve_synctex_forward` | TeX position → PDF (`synctex view`) |
+| `resolve_synctex_backward` | PDF click → TeX (`synctex edit`) |
+
+### ChkTeX
+
+| Tool | Description |
+|------|-------------|
+| `run_chktex_on_tex` | Lint one `.tex` |
+| `batch_run_chktex_on_tex` | Lint a list of `.tex` paths |
+| `run_chktex_on_workspace` | Discover `.tex` files, then lint (with file count caps) |
+
+### TeXstudio profile (host only)
+
+| Tool | Description |
+|------|-------------|
+| `read_texstudio_profile_snapshot` | Read `texstudio.ini` or `lastSession.txss` from TeXstudio config dirs (or `texstudio_config_dir` / `texstudio_ini_path`). `include_parsed_hints=true` may return `suggested_job_basename`. **Not** restricted to `workspace_root` — use only in trusted environments. |
+
+## Usage notes
+
+**`workspace_root` and `main_tex`**
+
+- If `workspace_root` is the folder that contains the main `.tex`, pass only the basename (e.g. `paper.tex`) — the server avoids redundant `latexmk -cd`.
+- If `workspace_root` is the repository root, pass a relative path (e.g. `chapters/paper.tex`); `latexmk` runs in that subfolder via `-cd`.
+
+**Build time and logs**
+
+- Builds spawn real `latexmk`/engine processes; wall time is often longer than a single IDE compile. Use `wall_clock_ms` in the response.
+- Tool output is truncated for MCP JSON size; read full `.log` files with `read_project_file`.
+
+**Limits**
+
+- Bibliography pipeline runs a **bounded** number of latexmk/bib cycles — not an open-ended “compile until done” loop.
+- Profile and config reads access files outside your LaTeX project by design.
 
 ## License
 
